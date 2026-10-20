@@ -2,95 +2,79 @@ name: Bing Daily Check-in
 
 on:
   schedule:
-    # 每天凌晨2点执行（UTC时间，对应北京时间10点）
+    # UTC 凌晨2点执行（对应北京时间上午10点）
+    # 如需北京时间凌晨2点执行，请改为 cron: '0 18 * * *'
     - cron: '0 2 * * *'
   workflow_dispatch:  # 允许手动触发
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   bing-checkin:
-    runs-on: ubuntu-latest
-    timeout-minutes: 300  # 设置5小时超时
+    # 固定使用 24.04，避免 ubuntu-latest 迁移到 Ubuntu 26 后环境变化
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     env:
       PYTHONUNBUFFERED: 1  # 确保Python输出不被缓存
-      DISPLAY: :99  # 为无头模式设置显示
-      CHROME_BIN: /usr/bin/google-chrome  # Chrome路径
-      CHROMEDRIVER_PATH: /usr/local/bin/chromedriver  # ChromeDriver路径
-    
+      ACCOUNTS_CONFIG: ${{ secrets.ACCOUNTS_CONFIG }}  # 通过环境变量传递Secret，避免引号注入问题
+
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
-      
+      uses: actions/checkout@v6
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
-        python-version: '3.9'
-        
-    - name: Install Chrome and ChromeDriver
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Install Chrome
       run: |
-        # 安装Chrome
-        curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-        sudo apt-get update
-        sudo apt-get install -y google-chrome-stable
-        
-        # 获取Chrome版本并安装兼容的ChromeDriver
-        CHROME_VERSION=$(google-chrome --version | grep -oE "[0-9]+\.[0-9]+")
-        echo "Chrome major version: $CHROME_VERSION"
-        
-        # 使用更兼容的方法安装ChromeDriver
-        # 方法1: 尝试从官方源下载
-        if wget -q --spider "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION"; then
-          echo "Official ChromeDriver available for version $CHROME_VERSION"
-          wget -O /tmp/chromedriver_version "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION"
-          CHROMEDRIVER_VERSION=$(cat /tmp/chromedriver_version)
-          wget -O /tmp/chromedriver.zip "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
-        else
-          echo "Official ChromeDriver not available, using fallback method"
-          # 方法2: 使用apt安装
-          sudo apt-get install -y chromium-chromedriver
-          sudo ln -sf /usr/bin/chromedriver /usr/local/bin/chromedriver
-          exit 0
-        fi
-        
-        # 解压并安装
-        unzip /tmp/chromedriver.zip -d /usr/local/bin/
-        chmod +x /usr/local/bin/chromedriver
-        rm /tmp/chromedriver.zip /tmp/chromedriver_version
-        
-    - name: Verify Chrome and ChromeDriver
-      run: |
+        # 直接下载官方 .deb 安装包，避免 apt 源/gpg 密钥步骤失败导致整个任务中断
+        wget -q -O /tmp/google-chrome-stable.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+        sudo apt-get install -y /tmp/google-chrome-stable.deb
         google-chrome --version
-        which google-chrome
-        chromedriver --version
-        which chromedriver
-        echo "Chrome binary: $CHROME_BIN"
-        echo "ChromeDriver path: $CHROMEDRIVER_PATH"
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
-    - name: Create config directory
-      run: mkdir -p config
-      
+
     - name: Setup accounts configuration
       run: |
-        # 从GitHub Secrets读取账号配置
-        echo '${{ secrets.ACCOUNTS_CONFIG }}' > config/accounts.json
-        
+        mkdir -p config
+        if [ -z "$ACCOUNTS_CONFIG" ]; then
+          echo "::error::Secret ACCOUNTS_CONFIG 未配置！请到仓库 Settings -> Secrets and variables -> Actions 添加账号JSON配置"
+          exit 1
+        fi
+        printf '%s' "$ACCOUNTS_CONFIG" > config/accounts.json
+        # 提前校验JSON合法性，避免跑到一半才失败
+        python -c "import json; json.load(open('config/accounts.json', encoding='utf-8'))" \
+          || { echo "::error::ACCOUNTS_CONFIG 不是合法的JSON格式"; exit 1; }
+        echo "账号配置校验通过"
+
     - name: Run Bing automation
       run: |
         python bingZDH.py --once
-        
+
+    - name: Collect logs and screenshots
+      if: always()
+      run: |
+        # 汇总日志和失败截图到统一目录，保证产物一定能上传
+        mkdir -p artifacts
+        cp -f bing_automation.log artifacts/ 2>/dev/null || true
+        cp -f /tmp/bing_automation.log artifacts/ 2>/dev/null || true
+        cp -f *.png artifacts/ 2>/dev/null || true
+        ls -la artifacts/ || true
+
     - name: Upload logs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: bing-logs
-        path: |
-          *.log
-          *.png
+        path: artifacts/
+        if-no-files-found: ignore
         retention-days: 7
