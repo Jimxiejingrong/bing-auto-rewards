@@ -30,8 +30,8 @@ if os.getenv('GITHUB_ACTIONS'):
     WAIT_TIMEOUT = 20  # 增加等待时间
     SLEEP_BETWEEN_SEARCH = (5, 15)  # 减少搜索间隔
     SLEEP_AFTER_4_SEARCH = 300  # 减少暂停时间（5分钟）
-    # 设置日志文件路径
-    LOG_FILE = "/tmp/bing_automation.log"
+    # 日志写到工作区根目录，方便 workflow 直接上传为 Artifact
+    LOG_FILE = "bing_automation.log"
 
 # ========== LOGGING ==========
 logging.basicConfig(
@@ -43,6 +43,20 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ========== 浏览器调试端口分配 ==========
+# 为每个浏览器实例分配唯一端口，避免多个账号组同时启动时端口冲突
+import threading
+
+_port_lock = threading.Lock()
+_port_counter = 0
+
+def next_debug_port():
+    global _port_counter
+    with _port_lock:
+        _port_counter += 1
+        return 9222 + _port_counter
+
 
 # ========== 工具函数 ==========
 def check_driver_connection(driver, group_name):
@@ -724,7 +738,7 @@ def search_for_points(driver, idx, email, search_words, group_name=None):
             logger.info(f"等待 {random_delay} 秒后进行第 {i+1} 次搜索...")
             time.sleep(random_delay)
             if (i + 1) % 5 == 0:
-                logger.info(f"已完成4次搜索，暂停{SLEEP_AFTER_4_SEARCH//60}分钟...")
+                logger.info(f"已完成5次搜索，暂停{SLEEP_AFTER_4_SEARCH//60}分钟...")
                 time.sleep(SLEEP_AFTER_4_SEARCH)
             driver.get(BING_URL)
             search_box = WebDriverWait(driver, 10).until(
@@ -824,7 +838,7 @@ def create_chrome_options():
         chrome_options.add_argument('--no-first-run')
         chrome_options.add_argument('--no-default-browser-check')
         chrome_options.add_argument('--no-zygote')
-        chrome_options.add_argument('--single-process')
+        # 注意：不要使用 --single-process，新版Chrome下会导致页面崩溃/假死
         chrome_options.add_argument('--disable-background-networking')
         chrome_options.add_argument('--disable-background-timer-throttling')
         chrome_options.add_argument('--disable-backgrounding-occluded-windows')
@@ -845,8 +859,8 @@ def create_chrome_options():
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--remote-debugging-port=9222')
-    
+        # 注意：调试端口由 next_debug_port() 在启动时动态分配，这里不再固定指定
+
     return chrome_options
 
 def process_account_group(group_name, accounts, search_words):
@@ -880,9 +894,11 @@ def process_account_group(group_name, accounts, search_words):
                         import os
                         temp_dir = tempfile.mkdtemp(prefix=f"chrome_group_{group_name}_")
                         chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-                        chrome_options.add_argument(f'--remote-debugging-port={9222 + hash(group_name) % 1000}')
-                        
-                        driver_result['driver'] = uc.Chrome(options=chrome_options, version_main=138)
+                        chrome_options.add_argument(f'--remote-debugging-port={next_debug_port()}')
+
+                        # 不指定 version_main，让 undetected-chromedriver 自动
+                        # 检测已安装的Chrome版本并下载匹配的ChromeDriver
+                        driver_result['driver'] = uc.Chrome(options=chrome_options)
                         logger.info(f"账号组 {group_name} Chrome浏览器启动成功！")
                     except Exception as e:
                         logger.error(f"账号组 {group_name} ChromeDriver创建失败: {e}")
@@ -947,9 +963,9 @@ def process_account_group(group_name, accounts, search_words):
                             import tempfile
                             temp_dir = tempfile.mkdtemp(prefix=f"chrome_group_{group_name}_retry_{attempt}_")
                             new_chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-                            new_chrome_options.add_argument(f'--remote-debugging-port={9222 + hash(group_name) % 1000 + attempt}')
-                            
-                            driver = uc.Chrome(options=new_chrome_options, version_main=138)
+                            new_chrome_options.add_argument(f'--remote-debugging-port={next_debug_port()}')
+
+                            driver = uc.Chrome(options=new_chrome_options)
                             logger.info(f"账号组 {group_name} Chrome浏览器重新启动成功！")
                             break
                         except Exception as e:
@@ -997,9 +1013,9 @@ def process_account_group(group_name, accounts, search_words):
                             import tempfile
                             temp_dir = tempfile.mkdtemp(prefix=f"chrome_group_{group_name}_retry_{attempt}_")
                             new_chrome_options.add_argument(f'--user-data-dir={temp_dir}')
-                            new_chrome_options.add_argument(f'--remote-debugging-port={9222 + hash(group_name) % 1000 + attempt}')
-                            
-                            driver = uc.Chrome(options=new_chrome_options, version_main=138)
+                            new_chrome_options.add_argument(f'--remote-debugging-port={next_debug_port()}')
+
+                            driver = uc.Chrome(options=new_chrome_options)
                             logger.info(f"账号组 {group_name} Chrome浏览器重新启动成功！")
                             break
                         except Exception as e2:
@@ -1027,11 +1043,33 @@ def process_account_group(group_name, accounts, search_words):
                 logger.warning(f"关闭账号组 {group_name} 浏览器时出错: {e}")
         logger.info(f"=== 账号组 {group_name} 任务结束 ===")
 
+def load_account_groups():
+    """
+    按优先级加载账号配置文件：
+    1. 环境变量 ACCOUNTS_FILE 指定的路径
+    2. config/accounts.json（GitHub Actions 中由 Secret 生成）
+    3. accounts.json（本地运行）
+    """
+    candidates = []
+    env_file = os.getenv('ACCOUNTS_FILE')
+    if env_file:
+        candidates.append(env_file)
+    candidates.extend(['config/accounts.json', 'accounts.json'])
+
+    for path in candidates:
+        if os.path.exists(path):
+            logger.info(f"使用账号配置文件: {path}")
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    raise FileNotFoundError(
+        "未找到账号配置文件！请创建 config/accounts.json 或 accounts.json，"
+        "或在 GitHub Actions 中配置 ACCOUNTS_CONFIG Secret"
+    )
+
 def main():
     logger.info("=== 程序开始执行 ===")
     logger.info("正在读取账号配置文件...")
-    with open('accounts.json', 'r', encoding='utf-8') as f:
-        account_groups = json.load(f)
+    account_groups = load_account_groups()
     
     total_accounts = sum(len(accounts) for accounts in account_groups.values())
     logger.info(f"成功读取到 {len(account_groups)} 个账号组，共 {total_accounts} 个账号")

@@ -1,0 +1,14 @@
+{
+  "group1": [
+    {
+      "email": "your_email@example.com",
+      "password": "your_password"
+    }
+  ],
+  "group2": [
+    {
+      "email": "another_email@example.com",
+      "password": "another_password"
+    }
+  ]
+}

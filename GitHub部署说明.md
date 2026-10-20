@@ -1,5 +1,13 @@
 # GitHub Actions 部署详细说明
 
+> ## ⚠️ 重要安全警告
+>
+> 如果你的 `accounts.json`（含真实邮箱和密码）曾经提交到 GitHub 仓库，请立即：
+>
+> 1. **修改所有相关账号的密码**（密码已经公开泄露，删文件也无法挽回历史记录）；
+> 2. 参考下方"清理历史记录"部分，用 `git filter-repo` 或 [BFG Repo-Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) 把该文件从 Git 历史中彻底清除（仅删除文件不足以从历史中移除）；
+> 3. 真实账号信息只通过仓库的 **Settings → Secrets and variables → Actions** 中的 `ACCOUNTS_CONFIG` Secret 提供，永远不要写入仓库文件。
+
 ## 步骤1: 创建GitHub仓库
 
 1. 登录你的GitHub账户
@@ -12,6 +20,7 @@
 ## 步骤2: 上传代码
 
 ### 方法1: 使用Git命令行
+
 ```bash
 # 克隆你的仓库
 git clone https://github.com/你的用户名/bing-auto-rewards.git
@@ -32,6 +41,7 @@ git push origin main
 ```
 
 ### 方法2: 直接在GitHub网页上传
+
 1. 在仓库页面点击 "Add file" → "Upload files"
 2. 拖拽或选择项目文件
 3. 填写提交信息，点击 "Commit changes"
@@ -46,6 +56,7 @@ git push origin main
 6. 值填写你的账号配置JSON（注意格式要正确）
 
 ### 账号配置示例：
+
 ```json
 {
   "group1": [
@@ -87,19 +98,23 @@ git push origin main
 ## 故障排除
 
 ### 常见问题1: Chrome安装失败
+
 - 确保工作流使用 `ubuntu-latest` 运行环境
 - 检查Chrome安装命令是否正确
 
 ### 常见问题2: 依赖安装失败
+
 - 检查 `requirements.txt` 文件格式
 - 确保Python版本兼容（推荐3.9）
 
 ### 常见问题3: 账号配置错误
+
 - 检查JSON格式是否正确
 - 确保账号密码没有特殊字符
 - 验证账号是否有效
 
 ### 常见问题4: 执行超时
+
 - GitHub Actions有6小时执行时间限制
 - 如果账号较多，可能需要分批处理
 
@@ -120,7 +135,9 @@ git push origin main
 ## 高级配置
 
 ### 自定义执行时间
+
 编辑 `.github/workflows/daily-checkin.yml` 文件中的cron表达式：
+
 ```yaml
 schedule:
   - cron: '0 2 * * *'  # 每天UTC 2:00
@@ -128,16 +145,20 @@ schedule:
 ```
 
 ### 多环境部署
+
 可以创建多个工作流文件，针对不同环境：
+
 - `daily-checkin-prod.yml` - 生产环境
 - `daily-checkin-test.yml` - 测试环境
 
 ### 通知配置
+
 可以添加邮件或Slack通知，在任务完成或失败时发送通知。
 
 ## 技术支持
 
 如果遇到问题：
+
 1. 查看GitHub Actions执行日志
 2. 检查工作流配置文件语法
 3. 验证账号配置格式
